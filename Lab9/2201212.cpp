@@ -2,112 +2,140 @@
 #include <vector>
 #include <string>
 #include <sstream>
-#include <bitset>
-#include <algorithm>
 #include <arpa/inet.h>
+#include <algorithm>
 
-struct Route {
-    std::string cidr; // CIDR notation
-    std::string line; // Line to use
+using namespace std;
+
+struct RouteEntry
+{
+    std::string cidr;
+    std::string line;
 };
 
-// Function to convert an IP address from string to binary format
-std::string ipToBinary(const std::string& ip) {
-    struct in_addr addr;
-    inet_pton(AF_INET, ip.c_str(), &addr);
-    return std::bitset<32>(ntohl(addr.s_addr)).to_string();
-}
+void cidrToNetworkAndMask(const std::string &cidr, in_addr &network, in_addr &mask)
+{
+    size_t pos = cidr.find('/');
+    std::string ip = cidr.substr(0, pos);
+    int prefixLength = std::stoi(cidr.substr(pos + 1));
 
-// Function to get the prefix length from CIDR notation
-int getPrefixLength(const std::string& cidr) {
-    size_t slashPos = cidr.find('/');
-    return std::stoi(cidr.substr(slashPos + 1));
-}
-
-// Function to convert hexadecimal IP to decimal format
-std::string hexToDecimalIP(const std::string& hexIP) {
-    std::stringstream ss;
-    for (size_t i = 0; i < hexIP.length(); i += 2) {
-        std::string byte = hexIP.substr(i, 2);
-        int decimal = std::stoi(byte, nullptr, 16);
-        ss << decimal;
-        if (i < hexIP.length() - 2) {
-            ss << ".";
-        }
+    std::stringstream ss(ip);
+    std::string segment;
+    std::string decimalIp;
+    while (std::getline(ss, segment, '.'))
+    {
+        unsigned int decimalSegment;
+        std::stringstream converter(segment);
+        converter >> std::hex >> decimalSegment;
+        decimalIp += std::to_string(decimalSegment) + ".";
     }
-    return ss.str();
+
+    if (!decimalIp.empty())
+    {
+        decimalIp.pop_back();
+    }
+
+    inet_pton(AF_INET, decimalIp.c_str(), &network);
+    mask.s_addr = htonl(~((1 << (32 - prefixLength)) - 1));
 }
 
-// Function to check if an IP address matches a CIDR
-bool matchesCIDR(const std::string& ip, const std::string& cidr) {
-    std::string ipBinary = ipToBinary(ip);
-    std::string cidrIp = cidr.substr(0, cidr.find('/'));
-    std::string cidrBinary = ipToBinary(hexToDecimalIP(cidrIp)); // Convert CIDR IP from hex to decimal
-    int prefixLength = getPrefixLength(cidr);
-    
-    return ipBinary.substr(0, prefixLength) == cidrBinary.substr(0, prefixLength);
+bool isInNetwork(const in_addr &ip, const in_addr &network, const in_addr &mask)
+{
+    return (ip.s_addr & mask.s_addr) == (network.s_addr & mask.s_addr);
 }
 
-// Function to perform IP forwarding
-std::string forwardIP(const std::string& ip, const std::vector<Route>& routingTable) {
-    std::string bestLine;
-    int maxPrefixLength = -1;
+std::string forward(const std::string &ipAddress, const std::vector<RouteEntry> &routingTable)
+{
+    in_addr ip;
+    inet_pton(AF_INET, ipAddress.c_str(), &ip);
 
-    for (const auto& route : routingTable) {
-        if (matchesCIDR(ip, route.cidr)) {
-            int prefixLength = getPrefixLength(route.cidr);
-            if (prefixLength > maxPrefixLength) {
-                maxPrefixLength = prefixLength;
-                bestLine = route.line;
+    std::string bestMatch;
+    int bestPrefixLength = -1;
+
+    for (const auto &entry : routingTable)
+    {
+        in_addr network, mask;
+        cidrToNetworkAndMask(entry.cidr, network, mask);
+
+        if (isInNetwork(ip, network, mask))
+        {
+            int prefixLength = std::stoi(entry.cidr.substr(entry.cidr.find('/') + 1));
+
+            if (prefixLength > bestPrefixLength)
+            {
+                bestPrefixLength = prefixLength;
+                bestMatch = entry.line;
             }
         }
     }
 
-    return bestLine;
+    if (bestMatch.empty())
+    {
+        return "No match found";
+    }
+    else
+    {
+        return bestMatch;
+    }
 }
 
-int main() {
-    // Example routing table
-    std::vector<Route> routingTable = {
+string process(const string &ip)
+{
+    if (ip.find('.') != string::npos)
+    {
+        std::stringstream ss(ip);
+        std::string segment;
+        std::string decimalIp;
+
+        while (std::getline(ss, segment, '.'))
+        {
+            unsigned int decimalSegment;
+            std::stringstream converter(segment);
+            converter >> std::hex >> decimalSegment;
+            decimalIp += std::to_string(decimalSegment) + ".";
+        }
+
+        if (!decimalIp.empty())
+        {
+            decimalIp.pop_back();
+        }
+        return decimalIp;
+    }
+
+    return ip;
+}
+
+int main()
+{
+    std::vector<RouteEntry> routingTable = {
         {"C4.5E.2.0/23", "A"},
         {"C4.5E.4.0/22", "B"},
         {"C4.5E.C0.0/19", "C"},
         {"C4.5E.40.0/18", "D"},
         {"C4.4C.0.0/14", "E"},
         {"C0.0.0.0/2", "F"},
-        {"80.0.0.0/1", "G"}
+        {"80.0.0.0/1", "G"},
     };
 
-    // Test IP addresses in hexadecimal format
-    std::vector<std::string> testIPs = {
-        "C4.4B.00.00",
-        "C4.5E.05.09",
-        "C4.4D.31.2E",
-        "C4.5E.03.87",
-        "C4.5E.7F.12",
-        "C4.5E.D1.02"
-    };
-
-    // Store unmatched IPs
-    std::vector<std::string> unmatchedIPs;
-
-    for (const auto& hexIP : testIPs) {
-        std::string decimalIP = hexToDecimalIP(hexIP);
-        std::string nextHop = forwardIP(decimalIP, routingTable);
-        if (!nextHop.empty()) {
-            std::cout << "Forwarding IP " << hexIP << " to line: " << nextHop << std::endl;
-        } else {
-            unmatchedIPs.push_back(hexIP);
-        }
+    vector<string> ips = {"C4.4B.31.2E", "C4.5E.05.09", "C4.4D.31.2E", "C4.5E.03.87", "C4.5E.7F.12", "C4.5E.D1.02"};
+    for (const auto &ip : ips)
+    {
+        cout << "Given IP: " << ip << " is processed as: " << process(ip) << endl;
+        string result = forward(process(ip), routingTable);
+        cout << "The line to use for IP: " << ip << " is: " << result << endl;
     }
 
-    // Display unmatched IPs
-    if (!unmatchedIPs.empty()) {
-        std::cout << "Unmatched IPs: ";
-        for (const auto& ip : unmatchedIPs) {
-            std::cout << ip << " ";
-        }
-        std::cout << std::endl;
+    while (1)
+    {
+        cout << "\nEnter an IP to know its forwarding line and -1 to exit: " << endl;
+        string ip;
+        cin >> ip;
+        if (ip == "-1")
+            return 0;
+
+        cout << "Given IP: " << ip << " is processed as: " << process(ip) << endl;
+        string result = forward(process(ip), routingTable);
+        cout << "The line to use for IP: " << ip << " is: " << result << endl;
     }
 
     return 0;
